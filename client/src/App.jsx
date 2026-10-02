@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import ObjectSelector from "./components/ObjectSelector";
 import RecordTable from "./components/RecordTable";
 import RecordModal from "./components/RecordModal";
+import API_BASE_URL from "./config/api";
 
 function App() {
     const [authenticated, setAuthenticated] =
@@ -44,13 +45,14 @@ function App() {
     const loadingMoreRef =
         useRef(false);
 
+
     /*
         Check authentication status
     */
     async function checkAuthentication() {
         try {
             const response = await fetch(
-                "http://localhost:5000/auth/status",
+                `${API_BASE_URL}/api/auth/status`,
                 {
                     credentials: "include"
                 }
@@ -72,12 +74,14 @@ function App() {
         }
     }
 
+
     /*
         Check authentication when application starts
     */
     useEffect(() => {
         checkAuthentication();
     }, []);
+
 
     /*
         Fetch Salesforce records
@@ -92,7 +96,7 @@ function App() {
             setNextRecordsUrl(null);
 
             const response = await fetch(
-                `http://localhost:5000/api/salesforce/${objectName}`,
+                `${API_BASE_URL}/api/salesforce/${objectName}`,
                 {
                     credentials: "include"
                 }
@@ -145,6 +149,7 @@ function App() {
         }
     }
 
+
     /*
         Load the next page of records
     */
@@ -167,7 +172,7 @@ function App() {
                 });
 
             const response = await fetch(
-                `http://localhost:5000/api/salesforce/${selectedObject}?${params.toString()}`,
+                `${API_BASE_URL}/api/salesforce/${selectedObject}?${params.toString()}`,
                 {
                     credentials: "include"
                 }
@@ -208,6 +213,7 @@ function App() {
             setLoadingMore(false);
         }
     }
+
 
     /*
         Infinite scrolling
@@ -251,6 +257,7 @@ function App() {
         authenticated
     ]);
 
+
     /*
         Fetch records whenever
         the selected object changes
@@ -268,6 +275,7 @@ function App() {
         authenticated
     ]);
 
+
     /*
         Change Salesforce object
     */
@@ -283,6 +291,7 @@ function App() {
         setError("");
     }
 
+
     /*
         View record
     */
@@ -291,7 +300,7 @@ function App() {
             setError("");
 
             const response = await fetch(
-                `http://localhost:5000/api/salesforce/${selectedObject}/${id}`,
+                `${API_BASE_URL}/api/salesforce/${selectedObject}/${id}`,
                 {
                     credentials: "include"
                 }
@@ -322,6 +331,7 @@ function App() {
         }
     }
 
+
     /*
         Open edit modal
     */
@@ -331,6 +341,7 @@ function App() {
         setError("");
     }
 
+
     /*
         Open create modal
     */
@@ -339,6 +350,7 @@ function App() {
         setModalMode("create");
         setError("");
     }
+
 
     /*
         Save record
@@ -357,12 +369,12 @@ function App() {
                 modalMode === "create"
             ) {
                 url =
-                    `http://localhost:5000/api/salesforce/${selectedObject}`;
+                    `${API_BASE_URL}/api/salesforce/${selectedObject}`;
 
                 method = "POST";
             } else {
                 url =
-                    `http://localhost:5000/api/salesforce/${selectedObject}/${selectedRecord.Id}`;
+                    `${API_BASE_URL}/api/salesforce/${selectedObject}/${selectedRecord.Id}`;
 
                 method = "PATCH";
             }
@@ -408,6 +420,7 @@ function App() {
         }
     }
 
+
     /*
         Delete record
     */
@@ -426,7 +439,7 @@ function App() {
 
             const response =
                 await fetch(
-                    `http://localhost:5000/api/salesforce/${selectedObject}/${id}`,
+                    `${API_BASE_URL}/api/salesforce/${selectedObject}/${id}`,
                     {
                         method: "DELETE",
                         credentials:
@@ -457,6 +470,7 @@ function App() {
         }
     }
 
+
     /*
         Close modal
     */
@@ -469,6 +483,7 @@ function App() {
         setSelectedRecord(null);
     }
 
+
     /*
         Logout
     */
@@ -479,7 +494,7 @@ function App() {
 
             const response =
                 await fetch(
-                    "http://localhost:5000/auth/logout",
+                    `${API_BASE_URL}/api/auth/logout`,
                     {
                         credentials:
                             "include"
@@ -500,7 +515,6 @@ function App() {
                 Clear frontend state
             */
             setAuthenticated(false);
-
             setRecords([]);
             setFields([]);
             setNextRecordsUrl(null);
@@ -520,6 +534,7 @@ function App() {
         }
     }
 
+
     /*
         Initial authentication check
     */
@@ -537,6 +552,7 @@ function App() {
             </div>
         );
     }
+
 
     /*
         Logged-out screen
@@ -559,7 +575,7 @@ function App() {
                     </p>
 
                     <a
-                        href="http://localhost:5000/auth/salesforce"
+                        href={`${API_BASE_URL}/api/auth/salesforce`}
                         className="salesforce-login-button"
                     >
                         Login with Salesforce
@@ -568,6 +584,7 @@ function App() {
             </div>
         );
     }
+
 
     /*
         Logged-in application

@@ -4,164 +4,285 @@ const crypto = require("crypto");
 
 const router = express.Router();
 
+
+/*
+    Generate PKCE code verifier
+*/
 function generateCodeVerifier() {
-    return crypto.randomBytes(64).toString("base64url");
+    return crypto
+        .randomBytes(64)
+        .toString("base64url");
 }
 
-function generateCodeChallenge(codeVerifier) {
+
+/*
+    Generate PKCE code challenge
+*/
+function generateCodeChallenge(
+    codeVerifier
+) {
     return crypto
         .createHash("sha256")
         .update(codeVerifier)
         .digest("base64url");
 }
 
+
 /*
     Start Salesforce OAuth
 */
-router.get("/salesforce", (req, res) => {
-    const codeVerifier = generateCodeVerifier();
-    const codeChallenge =
-        generateCodeChallenge(codeVerifier);
+router.get(
+    "/salesforce",
+    (req, res) => {
+        const codeVerifier =
+            generateCodeVerifier();
 
-    req.session.codeVerifier = codeVerifier;
+        const codeChallenge =
+            generateCodeChallenge(
+                codeVerifier
+            );
 
-    const params = new URLSearchParams({
-        response_type: "code",
-        client_id: process.env.SALESFORCE_CLIENT_ID,
-        redirect_uri: process.env.SALESFORCE_CALLBACK_URL,
-        code_challenge: codeChallenge,
-        code_challenge_method: "S256"
-    });
+        /*
+            Store PKCE verifier in the
+            user's session.
+        */
+        req.session.codeVerifier =
+            codeVerifier;
 
-    const authorizationUrl =
-        `${process.env.SALESFORCE_LOGIN_URL}/services/oauth2/authorize?${params.toString()}`;
+        const params =
+            new URLSearchParams({
+                response_type: "code",
 
-    res.redirect(authorizationUrl);
-});
+                client_id:
+                    process.env
+                        .SALESFORCE_CLIENT_ID,
+
+                redirect_uri:
+                    process.env
+                        .SALESFORCE_CALLBACK_URL,
+
+                code_challenge:
+                    codeChallenge,
+
+                code_challenge_method:
+                    "S256"
+            });
+
+        const authorizationUrl =
+            `${process.env.SALESFORCE_LOGIN_URL}/services/oauth2/authorize?${params.toString()}`;
+
+        res.redirect(
+            authorizationUrl
+        );
+    }
+);
+
 
 /*
     Salesforce OAuth callback
 */
-router.get("/salesforce/callback", async (req, res) => {
-    try {
-        const { code } = req.query;
+router.get(
+    "/salesforce/callback",
+    async (req, res) => {
+        try {
+            const { code } =
+                req.query;
 
-        if (!code) {
-            return res.status(400).json({
-                message: "Authorization code was not provided"
-            });
-        }
-
-        const codeVerifier =
-            req.session.codeVerifier;
-
-        if (!codeVerifier) {
-            return res.status(400).json({
-                message: "PKCE code verifier was not found"
-            });
-        }
-
-        const response = await axios.post(
-            `${process.env.SALESFORCE_LOGIN_URL}/services/oauth2/token`,
-            new URLSearchParams({
-                grant_type: "authorization_code",
-                code,
-                client_id:
-                    process.env.SALESFORCE_CLIENT_ID,
-                client_secret:
-                    process.env.SALESFORCE_CLIENT_SECRET,
-                redirect_uri:
-                    process.env.SALESFORCE_CALLBACK_URL,
-                code_verifier: codeVerifier
-            }),
-            {
-                headers: {
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-                }
+            /*
+                Salesforce must provide
+                an authorization code.
+            */
+            if (!code) {
+                return res
+                    .status(400)
+                    .json({
+                        message:
+                            "Authorization code was not provided"
+                    });
             }
-        );
 
-        const salesforceData = response.data;
+            /*
+                Retrieve the PKCE verifier
+                created during login.
+            */
+            const codeVerifier =
+                req.session
+                    .codeVerifier;
 
-        console.log(
-            "Salesforce OAuth successful"
-        );
+            if (!codeVerifier) {
+                return res
+                    .status(400)
+                    .json({
+                        message:
+                            "PKCE code verifier was not found"
+                    });
+            }
 
-        req.session.salesforce = {
-            accessToken:
-                salesforceData.access_token,
-            refreshToken:
-                salesforceData.refresh_token,
-            instanceUrl:
-                salesforceData.instance_url
-        };
+            /*
+                Exchange authorization code
+                for Salesforce access token.
+            */
+            const response =
+                await axios.post(
+                    `${process.env.SALESFORCE_LOGIN_URL}/services/oauth2/token`,
 
-        delete req.session.codeVerifier;
+                    new URLSearchParams({
+                        grant_type:
+                            "authorization_code",
 
-        /*
-            Redirect back to the React application
-        */
-        res.redirect("http://localhost:5173");
-    } catch (error) {
-        console.error(
-            "Salesforce OAuth error:",
-            error.response?.data ||
-            error.message
-        );
+                        code,
 
-        res.status(500).json({
-            message: "Salesforce OAuth failed",
-            error:
+                        client_id:
+                            process.env
+                                .SALESFORCE_CLIENT_ID,
+
+                        client_secret:
+                            process.env
+                                .SALESFORCE_CLIENT_SECRET,
+
+                        redirect_uri:
+                            process.env
+                                .SALESFORCE_CALLBACK_URL,
+
+                        code_verifier:
+                            codeVerifier
+                    }),
+
+                    {
+                        headers: {
+                            "Content-Type":
+                                "application/x-www-form-urlencoded"
+                        }
+                    }
+                );
+
+            const salesforceData =
+                response.data;
+
+            console.log(
+                "Salesforce OAuth successful"
+            );
+
+            /*
+                Store Salesforce connection
+                information in the session.
+            */
+            req.session.salesforce = {
+                accessToken:
+                    salesforceData
+                        .access_token,
+
+                refreshToken:
+                    salesforceData
+                        .refresh_token,
+
+                instanceUrl:
+                    salesforceData
+                        .instance_url
+            };
+
+            /*
+                PKCE verifier is no longer
+                needed after token exchange.
+            */
+            delete req.session.codeVerifier;
+
+            /*
+                Redirect to the React application.
+
+                Local:
+                http://localhost:5173
+
+                Production:
+                value from CLIENT_URL
+            */
+            const clientUrl =
+                process.env.CLIENT_URL ||
+                "http://localhost:5173";
+
+            res.redirect(
+                clientUrl
+            );
+        } catch (error) {
+            console.error(
+                "Salesforce OAuth error:",
                 error.response?.data ||
                 error.message
-        });
+            );
+
+            res.status(500).json({
+                message:
+                    "Salesforce OAuth failed",
+
+                error:
+                    error.response?.data ||
+                    error.message
+            });
+        }
     }
-});
+);
+
 
 /*
     Check whether the user is authenticated
 */
-router.get("/status", (req, res) => {
-    const salesforceSession =
-        req.session.salesforce;
+router.get(
+    "/status",
+    (req, res) => {
+        const salesforceSession =
+            req.session.salesforce;
 
-    if (!salesforceSession) {
-        return res.json({
-            authenticated: false
+        if (!salesforceSession) {
+            return res.json({
+                authenticated: false
+            });
+        }
+
+        res.json({
+            authenticated: true,
+
+            instanceUrl:
+                salesforceSession
+                    .instanceUrl
         });
     }
+);
 
-    res.json({
-        authenticated: true,
-        instanceUrl:
-            salesforceSession.instanceUrl
-    });
-});
 
 /*
     Logout
 */
-router.get("/logout", (req, res) => {
-    req.session.destroy((error) => {
-        if (error) {
-            console.error(
-                "Logout error:",
-                error
-            );
+router.get(
+    "/logout",
+    (req, res) => {
+        req.session.destroy(
+            (error) => {
+                if (error) {
+                    console.error(
+                        "Logout error:",
+                        error
+                    );
 
-            return res.status(500).json({
-                message: "Logout failed"
-            });
-        }
+                    return res
+                        .status(500)
+                        .json({
+                            message:
+                                "Logout failed"
+                        });
+                }
 
-        res.clearCookie("connect.sid");
+                res.clearCookie(
+                    "connect.sid"
+                );
 
-        res.json({
-            message:
-                "Logged out successfully"
-        });
-    });
-});
+                res.json({
+                    message:
+                        "Logged out successfully"
+                });
+            }
+        );
+    }
+);
+
 
 module.exports = router;
