@@ -5,6 +5,9 @@ export default defineConfig({
     plugins: [react()],
 
     server: {
+        allowedHosts: [
+            "chunk-astronaut-liqueur.ngrok-free.dev"
+        ],
         proxy: {
             "/api": {
                 target: "https://chunk-astronaut-liqueur.ngrok-free.dev",
