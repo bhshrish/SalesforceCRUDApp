@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from "react";
 
 import ObjectSelector from "./components/ObjectSelector";
@@ -5,105 +6,80 @@ import RecordTable from "./components/RecordTable";
 import RecordModal from "./components/RecordModal";
 import API_BASE_URL from "./config/api";
 
+const PAGE_SIZE = 20;
+
 function App() {
-    const [authenticated, setAuthenticated] =
-        useState(null);
+    const [authenticated, setAuthenticated] = useState(null);
 
-    const [selectedObject, setSelectedObject] =
-        useState("Account");
+    const [selectedObject, setSelectedObject] = useState("Account");
+    const [fields, setFields] = useState([]);
+    const [records, setRecords] = useState([]);
 
-    const [fields, setFields] =
-        useState([]);
+    const [page, setPage] = useState(1);
+    const [nextRecordsUrl, setNextRecordsUrl] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [error, setError] = useState("");
 
-    const [records, setRecords] =
-        useState([]);
+    const [modalMode, setModalMode] = useState(null);
+    const [selectedRecord, setSelectedRecord] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [loggingOut, setLoggingOut] = useState(false);
 
-    const [nextRecordsUrl, setNextRecordsUrl] =
-        useState(null);
+    const requestIdRef = useRef(0);
+    const loadingMoreRef = useRef(false);
 
-    const [loading, setLoading] =
-        useState(false);
+    const currentPageRecords = records.slice(
+        (page - 1) * PAGE_SIZE,
+        page * PAGE_SIZE
+    );
 
-    const [loadingMore, setLoadingMore] =
-        useState(false);
+    const hasPreviousPage = page > 1;
 
-    const [error, setError] =
-        useState("");
+    const hasNextPage =
+        records.length > page * PAGE_SIZE ||
+        Boolean(nextRecordsUrl);
 
-    const [modalMode, setModalMode] =
-        useState(null);
-
-    const [selectedRecord, setSelectedRecord] =
-        useState(null);
-
-    const [saving, setSaving] =
-        useState(false);
-
-    const [loggingOut, setLoggingOut] =
-        useState(false);
-
-    const loadingMoreRef =
-        useRef(false);
-
-
-    /*
-        Check authentication status
-    */
     async function checkAuthentication() {
         try {
             const response = await fetch(
                 `${API_BASE_URL}/api/auth/status`,
-                {
-                    credentials: "include"
-                }
+                { credentials: "include" }
             );
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
-            setAuthenticated(
-                data.authenticated
-            );
-        } catch (error) {
-            console.error(
-                "Authentication check failed:",
-                error
-            );
-
+            setAuthenticated(Boolean(data.authenticated));
+        } catch (err) {
+            console.error("Authentication check failed:", err);
             setAuthenticated(false);
         }
     }
 
-
-    /*
-        Check authentication when application starts
-    */
     useEffect(() => {
         checkAuthentication();
     }, []);
 
-
-    /*
-        Fetch Salesforce records
-    */
     async function fetchRecords(objectName) {
+        const requestId = ++requestIdRef.current;
+
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+        setLoading(true);
+        setError("");
+
+        setRecords([]);
+        setFields([]);
+        setNextRecordsUrl(null);
+        setPage(1);
+
         try {
-            setLoading(true);
-            setError("");
-
-            setRecords([]);
-            setFields([]);
-            setNextRecordsUrl(null);
-
             const response = await fetch(
                 `${API_BASE_URL}/api/salesforce/${objectName}`,
-                {
-                    credentials: "include"
-                }
+                { credentials: "include" }
             );
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(
@@ -112,202 +88,136 @@ function App() {
                 );
             }
 
-            setFields(
-                data.fields || []
-            );
+            if (requestId !== requestIdRef.current) return;
 
-            setRecords(
-                data.records || []
-            );
+            setFields(data.fields || []);
+            setRecords(data.records || []);
+            setNextRecordsUrl(data.nextRecordsUrl || null);
+        } catch (err) {
+            if (requestId !== requestIdRef.current) return;
 
-            setNextRecordsUrl(
-                data.nextRecordsUrl ||
-                null
-            );
-        } catch (error) {
-            console.error(
-                "Error fetching Salesforce records:",
-                error
-            );
+            console.error("Error fetching records:", err);
 
-            /*
-                If the backend says the session
-                is no longer valid, return to
-                logged-out state.
-            */
             if (
-                error.message ===
+                err.message ===
                 "Not authenticated with Salesforce"
             ) {
                 setAuthenticated(false);
                 return;
             }
 
-            setError(error.message);
+            setError(err.message);
         } finally {
-            setLoading(false);
+            if (requestId === requestIdRef.current) {
+                setLoading(false);
+            }
         }
     }
 
+    useEffect(() => {
+        if (!authenticated) return;
 
-    /*
-        Load the next page of records
-    */
-    async function loadMoreRecords() {
-        if (
-            !nextRecordsUrl ||
-            loadingMoreRef.current
-        ) {
+        fetchRecords(selectedObject);
+
+        return () => {
+            requestIdRef.current += 1;
+        };
+    }, [selectedObject, authenticated]);
+
+    async function handleNextPage() {
+        if (loading || loadingMoreRef.current) return;
+
+        const nextPage = page + 1;
+
+        // Navigate immediately if the next page is cached.
+        if (records.length > page * PAGE_SIZE) {
+            setPage(nextPage);
             return;
         }
+
+        if (!nextRecordsUrl) return;
+
+        const requestId = requestIdRef.current;
+        const objectName = selectedObject;
 
         try {
             loadingMoreRef.current = true;
             setLoadingMore(true);
             setError("");
 
-            const params =
-                new URLSearchParams({
-                    nextRecordsUrl
-                });
+            const params = new URLSearchParams({
+                nextRecordsUrl
+            });
 
             const response = await fetch(
-                `${API_BASE_URL}/api/salesforce/${selectedObject}?${params.toString()}`,
-                {
-                    credentials: "include"
-                }
+                `${API_BASE_URL}/api/salesforce/${objectName}?${params.toString()}`,
+                { credentials: "include" }
             );
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(
                     data.message ||
-                    "Failed to load more records"
+                    "Failed to load next page"
                 );
             }
 
-            setRecords(
-                (previousRecords) => [
-                    ...previousRecords,
-                    ...(data.records || [])
-                ]
-            );
+            if (requestId !== requestIdRef.current) return;
+
+            const newRecords = data.records || [];
+
+            setRecords((previous) => [
+                ...previous,
+                ...newRecords
+            ]);
 
             setNextRecordsUrl(
-                data.nextRecordsUrl ||
-                null
-            );
-        } catch (error) {
-            console.error(
-                "Pagination error:",
-                error
+                data.nextRecordsUrl || null
             );
 
-            setError(error.message);
+            if (newRecords.length > 0) {
+                setPage(nextPage);
+            }
+        } catch (err) {
+            if (requestId !== requestIdRef.current) return;
+
+            console.error("Pagination error:", err);
+            setError(err.message);
         } finally {
-            loadingMoreRef.current =
-                false;
+            loadingMoreRef.current = false;
 
-            setLoadingMore(false);
+            if (requestId === requestIdRef.current) {
+                setLoadingMore(false);
+            }
         }
     }
 
-
-    /*
-        Infinite scrolling
-    */
-    useEffect(() => {
-        if (!authenticated) {
-            return;
+    function handlePreviousPage() {
+        if (page > 1 && !loadingMore) {
+            setPage((previous) => previous - 1);
         }
+    }
 
-        function handleScroll() {
-            const scrollPosition =
-                window.innerHeight +
-                window.scrollY;
+    function handleObjectChange(objectName) {
+        if (objectName === selectedObject) return;
 
-            const pageHeight =
-                document.documentElement
-                    .scrollHeight;
-
-            if (
-                scrollPosition >=
-                pageHeight - 200
-            ) {
-                loadMoreRecords();
-            }
-        }
-
-        window.addEventListener(
-            "scroll",
-            handleScroll
-        );
-
-        return () => {
-            window.removeEventListener(
-                "scroll",
-                handleScroll
-            );
-        };
-    }, [
-        nextRecordsUrl,
-        selectedObject,
-        authenticated
-    ]);
-
-
-    /*
-        Fetch records whenever
-        the selected object changes
-    */
-    useEffect(() => {
-        if (!authenticated) {
-            return;
-        }
-
-        fetchRecords(
-            selectedObject
-        );
-    }, [
-        selectedObject,
-        authenticated
-    ]);
-
-
-    /*
-        Change Salesforce object
-    */
-    function handleObjectChange(
-        objectName
-    ) {
-        setSelectedObject(
-            objectName
-        );
-
+        setSelectedObject(objectName);
         setModalMode(null);
         setSelectedRecord(null);
         setError("");
     }
 
-
-    /*
-        View record
-    */
     async function handleView(id) {
         try {
             setError("");
 
             const response = await fetch(
                 `${API_BASE_URL}/api/salesforce/${selectedObject}/${id}`,
-                {
-                    credentials: "include"
-                }
+                { credentials: "include" }
             );
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(
@@ -316,139 +226,85 @@ function App() {
                 );
             }
 
-            setSelectedRecord(
-                data.record
-            );
-
+            setSelectedRecord(data.record);
             setModalMode("view");
-        } catch (error) {
-            console.error(
-                "View record error:",
-                error
-            );
-
-            setError(error.message);
+        } catch (err) {
+            console.error("View record error:", err);
+            setError(err.message);
         }
     }
 
-
-    /*
-        Open edit modal
-    */
     function handleEdit(record) {
         setSelectedRecord(record);
         setModalMode("edit");
         setError("");
     }
 
-
-    /*
-        Open create modal
-    */
     function handleCreate() {
         setSelectedRecord(null);
         setModalMode("create");
         setError("");
     }
 
-
-    /*
-        Save record
-    */
-    async function handleSave(
-        formData
-    ) {
+    async function handleSave(formData) {
         try {
             setSaving(true);
             setError("");
 
-            let url;
-            let method;
+            const isCreate = modalMode === "create";
 
-            if (
-                modalMode === "create"
-            ) {
-                url =
-                    `${API_BASE_URL}/api/salesforce/${selectedObject}`;
+            const url = isCreate
+                ? `${API_BASE_URL}/api/salesforce/${selectedObject}`
+                : `${API_BASE_URL}/api/salesforce/${selectedObject}/${selectedRecord.Id}`;
 
-                method = "POST";
-            } else {
-                url =
-                    `${API_BASE_URL}/api/salesforce/${selectedObject}/${selectedRecord.Id}`;
+            const response = await fetch(url, {
+                method: isCreate ? "POST" : "PATCH",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                credentials: "include",
+                body: JSON.stringify(formData)
+            });
 
-                method = "PATCH";
-            }
-
-            const response =
-                await fetch(url, {
-                    method,
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-                    credentials: "include",
-                    body: JSON.stringify(
-                        formData
-                    )
-                });
-
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(
-                    data.message ||
-                    "Failed to save record"
+                    data.message || "Failed to save record"
                 );
             }
 
             setModalMode(null);
             setSelectedRecord(null);
 
-            await fetchRecords(
-                selectedObject
-            );
-        } catch (error) {
-            console.error(
-                "Save record error:",
-                error
-            );
-
-            setError(error.message);
+            await fetchRecords(selectedObject);
+        } catch (err) {
+            console.error("Save record error:", err);
+            setError(err.message);
         } finally {
             setSaving(false);
         }
     }
 
-
-    /*
-        Delete record
-    */
     async function handleDelete(id) {
-        const confirmed =
-            window.confirm(
-                `Are you sure you want to delete this ${selectedObject}?`
-            );
+        const confirmed = window.confirm(
+            `Are you sure you want to delete this ${selectedObject}?`
+        );
 
-        if (!confirmed) {
-            return;
-        }
+        if (!confirmed) return;
 
         try {
             setError("");
 
-            const response =
-                await fetch(
-                    `${API_BASE_URL}/api/salesforce/${selectedObject}/${id}`,
-                    {
-                        method: "DELETE",
-                        credentials:
-                            "include"
-                    }
-                );
+            const response = await fetch(
+                `${API_BASE_URL}/api/salesforce/${selectedObject}/${id}`,
+                {
+                    method: "DELETE",
+                    credentials: "include"
+                }
+            );
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(
@@ -457,106 +313,68 @@ function App() {
                 );
             }
 
-            await fetchRecords(
-                selectedObject
-            );
-        } catch (error) {
-            console.error(
-                "Delete record error:",
-                error
-            );
-
-            setError(error.message);
+            await fetchRecords(selectedObject);
+        } catch (err) {
+            console.error("Delete record error:", err);
+            setError(err.message);
         }
     }
 
-
-    /*
-        Close modal
-    */
     function handleCloseModal() {
-        if (saving) {
-            return;
-        }
+        if (saving) return;
 
         setModalMode(null);
         setSelectedRecord(null);
     }
 
-
-    /*
-        Logout
-    */
     async function handleLogout() {
         try {
             setLoggingOut(true);
             setError("");
 
-            const response =
-                await fetch(
-                    `${API_BASE_URL}/api/auth/logout`,
-                    {
-                        credentials:
-                            "include"
-                    }
-                );
+            const response = await fetch(
+                `${API_BASE_URL}/api/auth/logout`,
+                { credentials: "include" }
+            );
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
                 throw new Error(
-                    data.message ||
-                    "Logout failed"
+                    data.message || "Logout failed"
                 );
             }
 
-            /*
-                Clear frontend state
-            */
+            requestIdRef.current += 1;
+
             setAuthenticated(false);
             setRecords([]);
             setFields([]);
             setNextRecordsUrl(null);
+            setPage(1);
             setModalMode(null);
             setSelectedRecord(null);
-        } catch (error) {
-            console.error(
-                "Logout error:",
-                error
-            );
-
-            setError(
-                error.message
-            );
+        } catch (err) {
+            console.error("Logout error:", err);
+            setError(err.message);
         } finally {
             setLoggingOut(false);
         }
     }
 
-
-    /*
-        Initial authentication check
-    */
     if (authenticated === null) {
         return (
             <div className="auth-loading">
                 <div className="auth-card">
                     <div className="spinner"></div>
-
                     <p>
-                        Checking Salesforce
-                        connection...
+                        Checking Salesforce connection...
                     </p>
                 </div>
             </div>
         );
     }
 
-
-    /*
-        Logged-out screen
-    */
     if (!authenticated) {
         return (
             <div className="login-page">
@@ -565,13 +383,11 @@ function App() {
                         ☁
                     </div>
 
-                    <h1>
-                        Salesforce CRUD
-                    </h1>
+                    <h1>Salesforce CRUD</h1>
 
                     <p>
-                        Connect your Salesforce
-                        account to manage records.
+                        Connect your Salesforce account
+                        to manage records.
                     </p>
 
                     <a
@@ -585,34 +401,23 @@ function App() {
         );
     }
 
-
-    /*
-        Logged-in application
-    */
     return (
         <div className="app">
             <header className="app-header">
                 <div>
                     <h1>
-                        Salesforce CRUD
-                        Application
+                        Salesforce CRUD Application
                     </h1>
-
                     <p>
-                        Manage Salesforce
-                        records from one
-                        interface
+                        Manage Salesforce records
+                        from one interface
                     </p>
                 </div>
 
                 <button
                     className="logout-button"
-                    onClick={
-                        handleLogout
-                    }
-                    disabled={
-                        loggingOut
-                    }
+                    onClick={handleLogout}
+                    disabled={loggingOut}
                 >
                     {loggingOut
                         ? "Logging out..."
@@ -623,30 +428,21 @@ function App() {
             <main className="app-content">
                 <div className="toolbar">
                     <ObjectSelector
-                        selectedObject={
-                            selectedObject
-                        }
-                        onObjectChange={
-                            handleObjectChange
-                        }
+                        selectedObject={selectedObject}
+                        onObjectChange={handleObjectChange}
                     />
 
                     <button
                         className="create-button"
-                        onClick={
-                            handleCreate
-                        }
+                        onClick={handleCreate}
                     >
-                        + Add{" "}
-                        {selectedObject}
+                        + Add {selectedObject}
                     </button>
                 </div>
 
                 {loading && (
                     <div className="loading-message">
-                        Loading{" "}
-                        {selectedObject}{" "}
-                        records...
+                        Loading {selectedObject} records...
                     </div>
                 )}
 
@@ -656,59 +452,71 @@ function App() {
                     </div>
                 )}
 
-                {!loading &&
-                    !error && (
-                        <>
-                            <RecordTable
-                                fields={fields}
-                                records={records}
-                                onView={
-                                    handleView
-                                }
-                                onEdit={
-                                    handleEdit
-                                }
-                                onDelete={
-                                    handleDelete
-                                }
-                            />
+                {!loading && (
+                    <>
+                        <RecordTable
+                            fields={fields}
+                            records={currentPageRecords}
+                            onView={handleView}
+                            onEdit={handleEdit}
+                            onDelete={handleDelete}
+                        />
 
-                            {loadingMore && (
-                                <div className="loading-more">
-                                    Loading more
-                                    records...
-                                </div>
-                            )}
+                        {(records.length > 0 ||
+                            nextRecordsUrl) && (
+                            <div className="pagination">
+                                <button
+                                    className="pagination-button"
+                                    onClick={handlePreviousPage}
+                                    disabled={
+                                        !hasPreviousPage ||
+                                        loadingMore
+                                    }
+                                >
+                                    Previous
+                                </button>
 
-                            {!nextRecordsUrl &&
-                                records.length >
-                                    0 && (
-                                    <div className="end-message">
-                                        All records
-                                        have been
-                                        loaded.
-                                    </div>
-                                )}
-                        </>
-                    )}
+                                <span className="pagination-info">
+                                    Page {page}
+                                </span>
+
+                                <button
+                                    className="pagination-button"
+                                    onClick={handleNextPage}
+                                    disabled={
+                                        !hasNextPage ||
+                                        loadingMore
+                                    }
+                                >
+                                    {loadingMore
+                                        ? "Loading..."
+                                        : "Next"}
+                                </button>
+                            </div>
+                        )}
+
+                        {records.length > 0 && (
+                            <div className="end-message">
+                                Showing{" "}
+                                {(page - 1) * PAGE_SIZE + 1}
+                                {" - "}
+                                {(page - 1) * PAGE_SIZE +
+                                    currentPageRecords.length}
+                                {" records"}
+                            </div>
+                        )}
+                    </>
+                )}
             </main>
 
             {modalMode && (
                 <RecordModal
                     mode={modalMode}
-                    objectName={
-                        selectedObject
-                    }
+                    objectName={selectedObject}
                     fields={fields}
-                    record={
-                        selectedRecord
-                    }
-                    onClose={
-                        handleCloseModal
-                    }
-                    onSave={
-                        handleSave
-                    }
+                    record={selectedRecord}
+                    onClose={handleCloseModal}
+                    onSave={handleSave}
                     saving={saving}
                 />
             )}

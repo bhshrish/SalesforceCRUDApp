@@ -1,3 +1,4 @@
+
 const express = require("express");
 const crypto = require("crypto");
 
@@ -13,12 +14,10 @@ const {
 
 const router = express.Router();
 
+const PAGE_SIZE = 20;
 
-/*
-    Salesforce objects allowed by the assignment
-*/
+// Salesforce objects and fields
 const objectFields = {
-
     Account: [
         "Id",
         "Name",
@@ -63,32 +62,21 @@ const objectFields = {
         "Priority",
         "Origin"
     ]
-
 };
 
-
-/*
-    Validate Salesforce object
-*/
+// Validate Salesforce object
 function validateObject(objectName) {
-
     return Object.prototype.hasOwnProperty.call(
         objectFields,
         objectName
     );
 }
 
-
-/*
-    Get encryption key.
-*/
+// Encryption key
 function getEncryptionKey() {
-
-    const secret =
-        process.env.SESSION_SECRET;
+    const secret = process.env.SESSION_SECRET;
 
     if (!secret) {
-
         throw new Error(
             "SESSION_SECRET is not configured"
         );
@@ -100,67 +88,49 @@ function getEncryptionKey() {
         .digest();
 }
 
-
-/*
-    Decrypt authentication cookie.
-*/
+// Decrypt authentication cookie
 function decryptData(value) {
-
     try {
+        const key = getEncryptionKey();
 
-        const key =
-            getEncryptionKey();
-
-        const parts =
-            value.split(".");
+        const parts = value.split(".");
 
         if (parts.length !== 3) {
             return null;
         }
 
-        const iv =
-            Buffer.from(
-                parts[0],
-                "base64url"
-            );
-
-        const authTag =
-            Buffer.from(
-                parts[1],
-                "base64url"
-            );
-
-        const encrypted =
-            Buffer.from(
-                parts[2],
-                "base64url"
-            );
-
-        const decipher =
-            crypto.createDecipheriv(
-                "aes-256-gcm",
-                key,
-                iv
-            );
-
-        decipher.setAuthTag(
-            authTag
+        const iv = Buffer.from(
+            parts[0],
+            "base64url"
         );
 
-        const decrypted =
-            Buffer.concat([
-                decipher.update(
-                    encrypted
-                ),
-                decipher.final()
-            ]);
+        const authTag = Buffer.from(
+            parts[1],
+            "base64url"
+        );
+
+        const encrypted = Buffer.from(
+            parts[2],
+            "base64url"
+        );
+
+        const decipher = crypto.createDecipheriv(
+            "aes-256-gcm",
+            key,
+            iv
+        );
+
+        decipher.setAuthTag(authTag);
+
+        const decrypted = Buffer.concat([
+            decipher.update(encrypted),
+            decipher.final()
+        ]);
 
         return JSON.parse(
             decrypted.toString("utf8")
         );
-
     } catch (error) {
-
         console.error(
             "Authentication cookie decryption failed:",
             error.message
@@ -170,119 +140,78 @@ function decryptData(value) {
     }
 }
 
-
-/*
-    Get a cookie from the request.
-*/
-function getCookie(
-    req,
-    cookieName
-) {
-
-    const cookieHeader =
-        req.headers.cookie;
+// Read cookie
+function getCookie(req, cookieName) {
+    const cookieHeader = req.headers.cookie;
 
     if (!cookieHeader) {
         return null;
     }
 
-    const cookies =
-        cookieHeader.split(";");
+    const cookies = cookieHeader.split(";");
 
     for (const cookie of cookies) {
-
-        const separatorIndex =
-            cookie.indexOf("=");
+        const separatorIndex = cookie.indexOf("=");
 
         if (separatorIndex === -1) {
             continue;
         }
 
-        const name =
-            cookie
-                .slice(
-                    0,
-                    separatorIndex
-                )
-                .trim();
+        const name = cookie
+            .slice(0, separatorIndex)
+            .trim();
 
         if (name !== cookieName) {
             continue;
         }
 
         return cookie
-            .slice(
-                separatorIndex + 1
-            )
+            .slice(separatorIndex + 1)
             .trim();
     }
 
     return null;
 }
 
-
-/*
-    Get Salesforce connection.
-
-    The Salesforce authentication
-    information is stored inside the
-    encrypted HttpOnly cookie.
-*/
-async function getSalesforceConnection(
-    req
-) {
-
-    const encryptedAuth =
-        getCookie(
-            req,
-            "salesforce_auth"
-        );
-
+// Get Salesforce connection
+async function getSalesforceConnection(req) {
+    const encryptedAuth = getCookie(
+        req,
+        "salesforce_auth"
+    );
 
     if (!encryptedAuth) {
-
         throw new Error(
             "Not authenticated with Salesforce"
         );
     }
 
-
-    const salesforceSession =
-        decryptData(
-            encryptedAuth
-        );
-
+    const salesforceSession = decryptData(
+        encryptedAuth
+    );
 
     if (
         !salesforceSession ||
         !salesforceSession.accessToken ||
         !salesforceSession.instanceUrl
     ) {
-
         throw new Error(
             "Invalid Salesforce authentication"
         );
     }
-
 
     const {
         accessToken,
         instanceUrl
     } = salesforceSession;
 
-
-    const versions =
-        await getSalesforceApiVersion(
-            instanceUrl,
-            accessToken
-        );
-
+    const versions = await getSalesforceApiVersion(
+        instanceUrl,
+        accessToken
+    );
 
     const latestVersion =
-        versions[
-            versions.length - 1
-        ].version;
-
+        versions[versions.length - 1].version;
 
     return {
         accessToken,
@@ -291,499 +220,355 @@ async function getSalesforceConnection(
     };
 }
 
+// Validate Salesforce pagination cursor
+function validateNextRecordsUrl(
+    nextRecordsUrl,
+    latestVersion
+) {
+    if (
+        typeof nextRecordsUrl !== "string" ||
+        nextRecordsUrl.length > 2048
+    ) {
+        return false;
+    }
 
-/*
-    GET
-    /api/salesforce/:object
+    // Salesforce cursor must be a relative API path.
+    // Reject absolute URLs and unrelated endpoints.
+    const prefix =
+        `/services/data/v${latestVersion}/query/`;
 
-    Get first page of Salesforce records
+    if (!nextRecordsUrl.startsWith(prefix)) {
+        return false;
+    }
 
-    Optional:
-    /api/salesforce/:object?nextRecordsUrl=...
-*/
-router.get(
-    "/:object",
-    async (req, res) => {
+    try {
+        const parsed = new URL(
+            nextRecordsUrl,
+            "https://salesforce.invalid"
+        );
 
-        try {
+        return (
+            parsed.origin ===
+                "https://salesforce.invalid" &&
+            parsed.pathname.startsWith(prefix) &&
+            !parsed.username &&
+            !parsed.password &&
+            !parsed.hash
+        );
+    } catch {
+        return false;
+    }
+}
 
-            const { object } =
-                req.params;
+// GET /api/salesforce/:object
+// Returns the first or next Salesforce page.
+router.get("/:object", async (req, res) => {
+    try {
+        const { object } = req.params;
 
-
-            if (
-                !validateObject(object)
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Invalid Salesforce object"
-                    });
-            }
-
-
-            const {
-                accessToken,
-                instanceUrl,
-                latestVersion
-            } =
-                await getSalesforceConnection(
-                    req
-                );
-
-
-            let result;
-
-
-            /*
-                Next page.
-            */
-            if (
-                req.query.nextRecordsUrl
-            ) {
-
-                result =
-                    await querySalesforceNext(
-                        instanceUrl,
-                        accessToken,
-                        req.query
-                            .nextRecordsUrl
-                    );
-
-            } else {
-
-                /*
-                    First page.
-                */
-                const fields =
-                    objectFields[
-                        object
-                    ].join(", ");
-
-
-                const soql = `
-                    SELECT ${fields}
-                    FROM ${object}
-                    ORDER BY CreatedDate DESC
-                    LIMIT 20
-                `;
-
-
-                result =
-                    await querySalesforce(
-                        instanceUrl,
-                        accessToken,
-                        latestVersion,
-                        soql
-                    );
-            }
-
-
-            res.json({
-
-                object,
-
-                fields:
-                    objectFields[
-                        object
-                    ],
-
-                count:
-                    result.records.length,
-
-                records:
-                    result.records,
-
-                nextRecordsUrl:
-                    result.nextRecordsUrl ||
-                    null,
-
-                done:
-                    result.done
-            });
-
-        } catch (error) {
-
-            console.error(
-                "Salesforce GET records error:",
-                error.response?.data ||
-                error.message
-            );
-
-
-            res.status(500).json({
-
-                message:
-                    "Failed to retrieve Salesforce records",
-
-                error:
-                    error.response?.data ||
-                    error.message
+        if (!validateObject(object)) {
+            return res.status(400).json({
+                message: "Invalid Salesforce object"
             });
         }
-    }
-);
 
+        const {
+            accessToken,
+            instanceUrl,
+            latestVersion
+        } = await getSalesforceConnection(req);
 
-/*
-    GET
-    /api/salesforce/:object/:id
+        let result;
 
-    Get one Salesforce record
-*/
-router.get(
-    "/:object/:id",
-    async (req, res) => {
-
-        try {
-
-            const {
-                object,
-                id
-            } = req.params;
-
+        if (req.query.nextRecordsUrl) {
+            const nextRecordsUrl =
+                req.query.nextRecordsUrl;
 
             if (
-                !validateObject(object)
+                !validateNextRecordsUrl(
+                    nextRecordsUrl,
+                    latestVersion
+                )
             ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Invalid Salesforce object"
-                    });
+                return res.status(400).json({
+                    message:
+                        "Invalid Salesforce pagination cursor"
+                });
             }
 
-
-            const {
-                accessToken,
+            result = await querySalesforceNext(
                 instanceUrl,
-                latestVersion
-            } =
-                await getSalesforceConnection(
-                    req
-                );
-
-
-            const record =
-                await getSalesforceRecord(
-                    instanceUrl,
-                    accessToken,
-                    latestVersion,
-                    object,
-                    id
-                );
-
-
-            res.json({
-
-                object,
-
-                fields:
-                    objectFields[
-                        object
-                    ],
-
-                record
-            });
-
-        } catch (error) {
-
-            console.error(
-                "Salesforce GET record error:",
-                error.response?.data ||
-                error.message
+                accessToken,
+                nextRecordsUrl,
+                PAGE_SIZE
             );
+        } else {
+            const fields =
+                objectFields[object].join(", ");
 
+            const soql = `
+                SELECT ${fields}
+                FROM ${object}
+                ORDER BY CreatedDate DESC, Id DESC
+            `;
 
-            res.status(500).json({
+            result = await querySalesforce(
+                instanceUrl,
+                accessToken,
+                latestVersion,
+                soql,
+                PAGE_SIZE
+            );
+        }
 
-                message:
-                    "Failed to retrieve Salesforce record",
+        return res.json({
+            object,
+            fields: objectFields[object],
+            count: result.records?.length || 0,
+            records: result.records || [],
+            nextRecordsUrl:
+                result.nextRecordsUrl || null,
+            done: Boolean(result.done),
+            pageSize: PAGE_SIZE
+        });
+    } catch (error) {
+        console.error(
+            "Salesforce GET records error:",
+            error.response?.data ||
+                error.message
+        );
 
-                error:
-                    error.response?.data ||
-                    error.message
+        const status =
+            error.message ===
+                "Not authenticated with Salesforce" ||
+            error.message ===
+                "Invalid Salesforce authentication"
+                ? 401
+                : 500;
+
+        return res.status(status).json({
+            message:
+                status === 401
+                    ? "Not authenticated with Salesforce"
+                    : "Failed to retrieve Salesforce records",
+            error:
+                status === 500
+                    ? error.response?.data ||
+                      error.message
+                    : undefined
+        });
+    }
+});
+
+// GET /api/salesforce/:object/:id
+// Retrieve a single record.
+router.get("/:object/:id", async (req, res) => {
+    try {
+        const { object, id } = req.params;
+
+        if (!validateObject(object)) {
+            return res.status(400).json({
+                message: "Invalid Salesforce object"
             });
         }
-    }
-);
 
+        const {
+            accessToken,
+            instanceUrl,
+            latestVersion
+        } = await getSalesforceConnection(req);
 
-/*
-    POST
-    /api/salesforce/:object
+        const record = await getSalesforceRecord(
+            instanceUrl,
+            accessToken,
+            latestVersion,
+            object,
+            id
+        );
 
-    Create Salesforce record
-*/
-router.post(
-    "/:object",
-    async (req, res) => {
+        return res.json({
+            object,
+            fields: objectFields[object],
+            record
+        });
+    } catch (error) {
+        console.error(
+            "Salesforce GET record error:",
+            error.response?.data ||
+                error.message
+        );
 
-        try {
-
-            const { object } =
-                req.params;
-
-
-            if (
-                !validateObject(object)
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Invalid Salesforce object"
-                    });
-            }
-
-
-            if (
-                !req.body ||
-                Object.keys(req.body).length === 0
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Record data is required"
-                    });
-            }
-
-
-            const {
-                accessToken,
-                instanceUrl,
-                latestVersion
-            } =
-                await getSalesforceConnection(
-                    req
-                );
-
-
-            const result =
-                await createSalesforceRecord(
-                    instanceUrl,
-                    accessToken,
-                    latestVersion,
-                    object,
-                    req.body
-                );
-
-
-            res.status(201).json({
-
-                message:
-                    `${object} created successfully`,
-
-                result
-            });
-
-        } catch (error) {
-
-            console.error(
-                "Salesforce CREATE error:",
+        return res.status(500).json({
+            message:
+                "Failed to retrieve Salesforce record",
+            error:
                 error.response?.data ||
                 error.message
-            );
+        });
+    }
+});
 
+// POST /api/salesforce/:object
+// Create a Salesforce record.
+router.post("/:object", async (req, res) => {
+    try {
+        const { object } = req.params;
 
-            res.status(500).json({
-
-                message:
-                    `Failed to create Salesforce ${req.params.object}`,
-
-                error:
-                    error.response?.data ||
-                    error.message
+        if (!validateObject(object)) {
+            return res.status(400).json({
+                message: "Invalid Salesforce object"
             });
         }
-    }
-);
 
-
-/*
-    PATCH
-    /api/salesforce/:object/:id
-
-    Update Salesforce record
-*/
-router.patch(
-    "/:object/:id",
-    async (req, res) => {
-
-        try {
-
-            const {
-                object,
-                id
-            } = req.params;
-
-
-            if (
-                !validateObject(object)
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Invalid Salesforce object"
-                    });
-            }
-
-
-            if (
-                !req.body ||
-                Object.keys(req.body).length === 0
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Update data is required"
-                    });
-            }
-
-
-            const {
-                accessToken,
-                instanceUrl,
-                latestVersion
-            } =
-                await getSalesforceConnection(
-                    req
-                );
-
-
-            const result =
-                await updateSalesforceRecord(
-                    instanceUrl,
-                    accessToken,
-                    latestVersion,
-                    object,
-                    id,
-                    req.body
-                );
-
-
-            res.json({
-
-                message:
-                    `${object} updated successfully`,
-
-                result
+        if (
+            !req.body ||
+            Object.keys(req.body).length === 0
+        ) {
+            return res.status(400).json({
+                message: "Record data is required"
             });
+        }
 
-        } catch (error) {
+        const {
+            accessToken,
+            instanceUrl,
+            latestVersion
+        } = await getSalesforceConnection(req);
 
-            console.error(
-                "Salesforce UPDATE error:",
+        const result = await createSalesforceRecord(
+            instanceUrl,
+            accessToken,
+            latestVersion,
+            object,
+            req.body
+        );
+
+        return res.status(201).json({
+            message:
+                `${object} created successfully`,
+            result
+        });
+    } catch (error) {
+        console.error(
+            "Salesforce CREATE error:",
+            error.response?.data ||
+                error.message
+        );
+
+        return res.status(500).json({
+            message:
+                `Failed to create Salesforce ${req.params.object}`,
+            error:
                 error.response?.data ||
                 error.message
-            );
+        });
+    }
+});
 
+// PATCH /api/salesforce/:object/:id
+// Update a Salesforce record.
+router.patch("/:object/:id", async (req, res) => {
+    try {
+        const { object, id } = req.params;
 
-            res.status(500).json({
-
-                message:
-                    `Failed to update Salesforce ${req.params.object}`,
-
-                error:
-                    error.response?.data ||
-                    error.message
+        if (!validateObject(object)) {
+            return res.status(400).json({
+                message: "Invalid Salesforce object"
             });
         }
-    }
-);
 
-
-/*
-    DELETE
-    /api/salesforce/:object/:id
-
-    Delete Salesforce record
-*/
-router.delete(
-    "/:object/:id",
-    async (req, res) => {
-
-        try {
-
-            const {
-                object,
-                id
-            } = req.params;
-
-
-            if (
-                !validateObject(object)
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-                        message:
-                            "Invalid Salesforce object"
-                    });
-            }
-
-
-            const {
-                accessToken,
-                instanceUrl,
-                latestVersion
-            } =
-                await getSalesforceConnection(
-                    req
-                );
-
-
-            const result =
-                await deleteSalesforceRecord(
-                    instanceUrl,
-                    accessToken,
-                    latestVersion,
-                    object,
-                    id
-                );
-
-
-            res.json({
-
-                message:
-                    `${object} deleted successfully`,
-
-                result
+        if (
+            !req.body ||
+            Object.keys(req.body).length === 0
+        ) {
+            return res.status(400).json({
+                message: "Update data is required"
             });
+        }
 
-        } catch (error) {
+        const {
+            accessToken,
+            instanceUrl,
+            latestVersion
+        } = await getSalesforceConnection(req);
 
-            console.error(
-                "Salesforce DELETE error:",
+        const result = await updateSalesforceRecord(
+            instanceUrl,
+            accessToken,
+            latestVersion,
+            object,
+            id,
+            req.body
+        );
+
+        return res.json({
+            message:
+                `${object} updated successfully`,
+            result
+        });
+    } catch (error) {
+        console.error(
+            "Salesforce UPDATE error:",
+            error.response?.data ||
+                error.message
+        );
+
+        return res.status(500).json({
+            message:
+                `Failed to update Salesforce ${req.params.object}`,
+            error:
                 error.response?.data ||
                 error.message
-            );
+        });
+    }
+});
 
+// DELETE /api/salesforce/:object/:id
+// Delete a Salesforce record.
+router.delete("/:object/:id", async (req, res) => {
+    try {
+        const { object, id } = req.params;
 
-            res.status(500).json({
-
-                message:
-                    `Failed to delete Salesforce ${req.params.object}`,
-
-                error:
-                    error.response?.data ||
-                    error.message
+        if (!validateObject(object)) {
+            return res.status(400).json({
+                message: "Invalid Salesforce object"
             });
         }
-    }
-);
 
+        const {
+            accessToken,
+            instanceUrl,
+            latestVersion
+        } = await getSalesforceConnection(req);
+
+        const result = await deleteSalesforceRecord(
+            instanceUrl,
+            accessToken,
+            latestVersion,
+            object,
+            id
+        );
+
+        return res.json({
+            message:
+                `${object} deleted successfully`,
+            result
+        });
+    } catch (error) {
+        console.error(
+            "Salesforce DELETE error:",
+            error.response?.data ||
+                error.message
+        );
+
+        return res.status(500).json({
+            message:
+                `Failed to delete Salesforce ${req.params.object}`,
+            error:
+                error.response?.data ||
+                error.message
+        });
+    }
+});
 
 module.exports = router;
