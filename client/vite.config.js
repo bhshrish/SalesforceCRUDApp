@@ -5,12 +5,13 @@ export default defineConfig({
     plugins: [react()],
 
     server: {
-        allowedHosts: [
-            "chunk-astronaut-liqueur.ngrok-free.dev"
-        ],
+        /*
+            Local development only.
+            On Vercel, /api is served by api/index.js.
+        */
         proxy: {
             "/api": {
-                target: "https://chunk-astronaut-liqueur.ngrok-free.dev",
+                target: "http://localhost:5000",
                 changeOrigin: true
             }
         }
